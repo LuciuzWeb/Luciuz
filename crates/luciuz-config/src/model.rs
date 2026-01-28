@@ -21,6 +21,10 @@ pub struct Server {
 
     #[serde(default = "default_profile")]
     pub profile: String,
+
+    /// Canonical host (e.g. "luciuz.com"). If set, any other Host redirects to it.
+    #[serde(default)]
+    pub canonical_host: Option<String>,
 }
 
 fn default_http_listen() -> String {

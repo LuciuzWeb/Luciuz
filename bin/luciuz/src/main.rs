@@ -1,8 +1,11 @@
 use std::net::SocketAddr;
 
 use axum::{
-    http::{HeaderMap, Uri, header::HOST},
-    response::Redirect,
+    body::Body,
+    extract::State,
+    http::{header::HOST, HeaderMap, Request, Uri},
+    middleware::{from_fn_with_state, Next},
+    response::{IntoResponse, Redirect, Response},
     routing::get,
     Router,
 };
@@ -85,6 +88,44 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 }
 
+#[derive(Clone)]
+struct CanonicalHost(String);
+
+async fn canonical_host_mw(
+    State(state): State<CanonicalHost>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let canonical = state.0.as_str();
+
+    // Host header (strip optional port)
+    let host = req
+        .headers()
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(':').next().unwrap_or(s));
+
+    if let Some(host) = host {
+        if host != canonical {
+            let path = req
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or(req.uri().path());
+
+            let target = format!("https://{canonical}{path}");
+            return Redirect::permanent(&target).into_response();
+        }
+    }
+
+    next.run(req).await
+}
+
+#[derive(Clone)]
+struct RedirectState {
+    canonical_host: Option<String>,
+}
+
 async fn run_https_with_acme_http01(
     cfg: luciuz_config::Config,
     http_addr: SocketAddr,
@@ -123,13 +164,25 @@ async fn run_https_with_acme_http01(
         }
     });
 
+    let canonical = cfg.server.canonical_host.clone();
+
+    // --- HTTPS: apply canonical host redirect (www -> apex)
+    let https_app = if let Some(ch) = canonical.clone() {
+        https_app.layer(from_fn_with_state(CanonicalHost(ch), canonical_host_mw))
+    } else {
+        https_app
+    };
+
     // --- HTTP: ACME challenge + redirect only
     let http_app = Router::new()
         .route_service(
             "/.well-known/acme-challenge/{challenge_token}",
             acme_challenge_service,
         )
-        .fallback(get(http_to_https_redirect));
+        .fallback(get(http_to_https_redirect))
+        .with_state(RedirectState {
+            canonical_host: canonical,
+        });
 
     // --- Servers
     let http_future = bind(http_addr).serve(http_app.into_make_service());
@@ -141,10 +194,15 @@ async fn run_https_with_acme_http01(
     Ok(())
 }
 
-async fn http_to_https_redirect(uri: Uri, headers: HeaderMap) -> Redirect {
+async fn http_to_https_redirect(
+    State(state): State<RedirectState>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Redirect {
     let host = headers
         .get(HOST)
         .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(':').next().unwrap_or(s))
         .unwrap_or("luciuz.com");
 
     let path = uri
@@ -152,6 +210,8 @@ async fn http_to_https_redirect(uri: Uri, headers: HeaderMap) -> Redirect {
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
 
-    let target = format!("https://{host}{path}");
+    let target_host = state.canonical_host.as_deref().unwrap_or(host);
+
+    let target = format!("https://{target_host}{path}");
     Redirect::permanent(&target)
 }

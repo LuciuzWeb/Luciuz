@@ -5,6 +5,7 @@
 http_listen = "0.0.0.0:80"
 https_listen = "0.0.0.0:443"
 profile = "public_api"
+canonical_host = "luciuz.com"
 
 [acme]
 enabled = true

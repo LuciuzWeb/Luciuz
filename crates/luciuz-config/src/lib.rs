@@ -44,6 +44,17 @@ fn validate(cfg: &Config) -> Result<()> {
         }
     }
 
+    if let Some(host) = &cfg.server.canonical_host {
+        if host.trim().is_empty() {
+            return Err(LuciuzError::Config("server.canonical_host is empty".into()));
+        }
+        if host.contains(' ') {
+            return Err(LuciuzError::Config(
+                "server.canonical_host must not contain spaces".into(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
