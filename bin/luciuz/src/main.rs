@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use axum::error_handling::HandleErrorLayer;
 use axum::{
     body::Body,
     extract::State,
@@ -16,6 +17,9 @@ use axum::{
     Router,
 };
 use clap::{Parser, Subcommand};
+use std::time::Duration;
+use tower::timeout::TimeoutLayer;
+use tower::{BoxError, ServiceBuilder};
 use tracing::{info, warn};
 
 static COOP: HeaderName = HeaderName::from_static("cross-origin-opener-policy");
@@ -356,6 +360,19 @@ async fn run_https_with_acme_http01(
     } else {
         http_app
     };
+
+    let https_app = https_app.layer(
+        ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(|err: BoxError| async move {
+                if err.is::<tower::timeout::error::Elapsed>() {
+                    warn!("request timed out");
+                    return (StatusCode::GATEWAY_TIMEOUT, "").into_response();
+                }
+                // fallback
+                (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+            }))
+            .layer(TimeoutLayer::new(Duration::from_secs(30))),
+    );
 
     // --- Servers
     let http_future = bind(http_addr).serve(http_app.into_make_service());
