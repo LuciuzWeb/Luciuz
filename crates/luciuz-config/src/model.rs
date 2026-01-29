@@ -41,6 +41,10 @@ pub struct Server {
     /// Add preload directive.
     #[serde(default)]
     pub hsts_preload: bool,
+
+    /// Enable baseline security headers on HTTPS responses.
+    #[serde(default = "default_security_headers")]
+    pub security_headers: bool,
 }
 
 fn default_http_listen() -> String {
@@ -57,6 +61,10 @@ fn default_profile() -> String {
 
 fn default_hsts_max_age() -> u64 {
     86400
+}
+
+fn default_security_headers() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -3,7 +3,10 @@ use std::net::SocketAddr;
 use axum::{
     body::Body,
     extract::State,
-    http::{header::{HOST, STRICT_TRANSPORT_SECURITY}, HeaderMap, HeaderValue, Request, Uri},
+    http::{
+        header::{HeaderName, HOST, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS, REFERRER_POLICY, X_FRAME_OPTIONS},
+        HeaderMap, HeaderValue, Request, Uri,
+    },
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -11,6 +14,9 @@ use axum::{
 };
 use clap::{Parser, Subcommand};
 use tracing::{info, warn};
+
+static COOP: HeaderName = HeaderName::from_static("cross-origin-opener-policy");
+static CORP: HeaderName = HeaderName::from_static("cross-origin-resource-policy");
 
 #[derive(Parser, Debug)]
 #[command(name = "luciuz", version, about = "Luciuz web server (next-gen)")]
@@ -137,6 +143,44 @@ async fn hsts_mw(
 }
 
 #[derive(Clone)]
+struct SecurityHeadersState {
+    x_content_type_options: HeaderValue,
+    referrer_policy: HeaderValue,
+    x_frame_options: HeaderValue,
+    coop: HeaderValue,
+    corp: HeaderValue,
+}
+
+async fn security_headers_mw(
+    State(state): State<SecurityHeadersState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let mut res = next.run(req).await;
+
+    // Only set if not already present (allows app/routes to override).
+    let h = res.headers_mut();
+
+    if !h.contains_key(X_CONTENT_TYPE_OPTIONS) {
+        h.insert(X_CONTENT_TYPE_OPTIONS, state.x_content_type_options.clone());
+    }
+    if !h.contains_key(REFERRER_POLICY) {
+        h.insert(REFERRER_POLICY, state.referrer_policy.clone());
+    }
+    if !h.contains_key(X_FRAME_OPTIONS) {
+        h.insert(X_FRAME_OPTIONS, state.x_frame_options.clone());
+    }
+    if !h.contains_key(&COOP) {
+        h.insert(COOP.clone(), state.coop.clone());
+    }
+    if !h.contains_key(&CORP) {
+        h.insert(CORP.clone(), state.corp.clone());
+    }
+
+    res
+}
+
+#[derive(Clone)]
 struct RedirectState {
     canonical_host: Option<String>,
 }
@@ -202,6 +246,20 @@ async fn run_https_with_acme_http01(
             .map_err(|_| anyhow::anyhow!("invalid HSTS header value"))?;
 
         https_app.layer(from_fn_with_state(HstsState { value: hv }, hsts_mw))
+    } else {
+        https_app
+    };
+
+    let https_app = if cfg.server.security_headers {
+        let state = SecurityHeadersState {
+            x_content_type_options: HeaderValue::from_static("nosniff"),
+            referrer_policy: HeaderValue::from_static("strict-origin-when-cross-origin"),
+            x_frame_options: HeaderValue::from_static("DENY"),
+            coop: HeaderValue::from_static("same-origin"),
+            corp: HeaderValue::from_static("same-site"),
+        };
+
+        https_app.layer(from_fn_with_state(state, security_headers_mw))
     } else {
         https_app
     };
