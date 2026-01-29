@@ -5,10 +5,10 @@ use axum::{
     extract::State,
     http::{
         header::{
-            HeaderName, HOST, REFERRER_POLICY, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
-            X_FRAME_OPTIONS,
+            HeaderName, ALLOW, HOST, REFERRER_POLICY, STRICT_TRANSPORT_SECURITY,
+            X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
         },
-        HeaderMap, HeaderValue, Request, Uri,
+        HeaderMap, HeaderValue, Method, Request, StatusCode, Uri,
     },
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Redirect, Response},
@@ -202,6 +202,56 @@ struct RedirectState {
     canonical_host: Option<String>,
 }
 
+#[derive(Clone)]
+struct HttpGuardState {
+    canonical: String,
+    www: String,
+}
+
+fn method_not_allowed() -> Response {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(ALLOW, "GET, HEAD")
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn http_guard_mw(
+    State(state): State<HttpGuardState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    // Only allow GET/HEAD on port 80 (ACME + redirect only).
+    let m = req.method();
+    if *m != Method::GET && *m != Method::HEAD {
+        warn!(method = %m, uri = %req.uri(), "rejecting non-GET/HEAD on http");
+        return method_not_allowed();
+    }
+
+    // Host allowlist (strip optional port)
+    let host = req
+        .headers()
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(':').next().unwrap_or(s));
+
+    match host {
+        Some(h) if h == state.canonical || h == state.www => {
+            // ok
+        }
+        Some(h) => {
+            warn!(host = %h, uri = %req.uri(), "rejecting request for unknown host on http");
+            return StatusCode::MISDIRECTED_REQUEST.into_response(); // 421
+        }
+        None => {
+            warn!(uri = %req.uri(), "rejecting request without Host header on http");
+            return StatusCode::BAD_REQUEST.into_response(); // 400
+        }
+    }
+
+    next.run(req).await
+}
+
 async fn run_https_with_acme_http01(
     cfg: luciuz_config::Config,
     http_addr: SocketAddr,
@@ -286,7 +336,6 @@ async fn run_https_with_acme_http01(
         https_app
     };
 
-    // --- HTTP: ACME challenge + redirect only
     let http_app = Router::new()
         .route_service(
             "/.well-known/acme-challenge/{challenge_token}",
@@ -294,8 +343,19 @@ async fn run_https_with_acme_http01(
         )
         .fallback(get(http_to_https_redirect))
         .with_state(RedirectState {
-            canonical_host: canonical,
+            canonical_host: canonical.clone(),
         });
+
+    // Apply HTTP guard only when canonical host is configured
+    let http_app = if let Some(ch) = canonical.clone() {
+        let state = HttpGuardState {
+            www: format!("www.{ch}"),
+            canonical: ch,
+        };
+        http_app.layer(from_fn_with_state(state, http_guard_mw))
+    } else {
+        http_app
+    };
 
     // --- Servers
     let http_future = bind(http_addr).serve(http_app.into_make_service());
