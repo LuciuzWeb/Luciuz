@@ -20,6 +20,7 @@ prod = true
 email = "admin@luciuz.com"
 domains = ["luciuz.com", "www.luciuz.com"]
 cache_dir = "/var/lib/luciuz/acme"
+challenge = "http-01"
 
 [telemetry]
 json_logs = true

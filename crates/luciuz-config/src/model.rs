@@ -101,6 +101,9 @@ pub struct Acme {
     /// Directory for account/cert cache.
     #[serde(default = "default_acme_cache_dir")]
     pub cache_dir: String,
+
+    #[serde(default = "default_acme_challenge")]
+    pub challenge: String,
 }
 
 impl Default for Acme {
@@ -111,12 +114,17 @@ impl Default for Acme {
             email: String::new(),
             domains: Vec::new(),
             cache_dir: default_acme_cache_dir(),
+            challenge: default_acme_challenge(),
         }
     }
 }
 
 fn default_acme_cache_dir() -> String {
     "./acme-cache".to_string()
+}
+
+fn default_acme_challenge() -> String {
+    "http-01".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

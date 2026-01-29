@@ -46,6 +46,15 @@ fn validate(cfg: &Config) -> Result<()> {
                 "acme.enabled=true but acme.email is empty".into(),
             ));
         }
+
+        match cfg.acme.challenge.as_str() {
+            "http-01" | "tls-alpn-01" => {}
+            other => {
+                return Err(LuciuzError::Config(format!(
+                    "acme.challenge invalid: {other} (allowed: http-01|tls-alpn-01)"
+                )));
+            }
+        }
     }
 
     if let Some(host) = &cfg.server.canonical_host {
