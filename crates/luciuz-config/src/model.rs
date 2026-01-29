@@ -25,6 +25,22 @@ pub struct Server {
     /// Canonical host (e.g. "luciuz.com"). If set, any other Host redirects to it.
     #[serde(default)]
     pub canonical_host: Option<String>,
+
+    /// Enable HSTS header on HTTPS responses only.
+    #[serde(default)]
+    pub hsts: bool,
+
+    /// HSTS max-age in seconds.
+    #[serde(default = "default_hsts_max_age")]
+    pub hsts_max_age: u64,
+
+    /// Add includeSubDomains directive.
+    #[serde(default)]
+    pub hsts_include_subdomains: bool,
+
+    /// Add preload directive.
+    #[serde(default)]
+    pub hsts_preload: bool,
 }
 
 fn default_http_listen() -> String {
@@ -37,6 +53,10 @@ fn default_https_listen() -> String {
 
 fn default_profile() -> String {
     "public_api".to_string()
+}
+
+fn default_hsts_max_age() -> u64 {
+    86400
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

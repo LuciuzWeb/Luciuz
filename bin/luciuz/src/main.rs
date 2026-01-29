@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use axum::{
     body::Body,
     extract::State,
-    http::{header::HOST, HeaderMap, Request, Uri},
+    http::{header::{HOST, STRICT_TRANSPORT_SECURITY}, HeaderMap, HeaderValue, Request, Uri},
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -122,6 +122,21 @@ async fn canonical_host_mw(
 }
 
 #[derive(Clone)]
+struct HstsState {
+    value: HeaderValue,
+}
+
+async fn hsts_mw(
+    State(state): State<HstsState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(STRICT_TRANSPORT_SECURITY, state.value.clone());
+    res
+}
+
+#[derive(Clone)]
 struct RedirectState {
     canonical_host: Option<String>,
 }
@@ -169,6 +184,24 @@ async fn run_https_with_acme_http01(
     // --- HTTPS: apply canonical host redirect (www -> apex)
     let https_app = if let Some(ch) = canonical.clone() {
         https_app.layer(from_fn_with_state(CanonicalHost(ch), canonical_host_mw))
+    } else {
+        https_app
+    };
+
+    // --- HTTPS: HSTS (HTTPS only)
+    let https_app = if cfg.server.hsts {
+        let mut v = format!("max-age={}", cfg.server.hsts_max_age);
+        if cfg.server.hsts_include_subdomains {
+            v.push_str("; includeSubDomains");
+        }
+        if cfg.server.hsts_preload {
+            v.push_str("; preload");
+        }
+
+        let hv = HeaderValue::from_str(&v)
+            .map_err(|_| anyhow::anyhow!("invalid HSTS header value"))?;
+
+        https_app.layer(from_fn_with_state(HstsState { value: hv }, hsts_mw))
     } else {
         https_app
     };

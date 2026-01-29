@@ -31,6 +31,10 @@ fn validate(cfg: &Config) -> Result<()> {
         }
     }
 
+    if cfg.server.hsts && cfg.server.hsts_max_age == 0 {
+        return Err(LuciuzError::Config("server.hsts_max_age must be > 0 when hsts=true".into()));
+    }
+
     if cfg.acme.enabled {
         if cfg.acme.domains.is_empty() {
             return Err(LuciuzError::Config(
