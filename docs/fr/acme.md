@@ -22,6 +22,28 @@ challenge = "http-01" # ou "tls-alpn-01"
 - Utilise uniquement le port 443 : le challenge se fait pendant le handshake TLS.
 - Permet à terme un mode **443-only** (pas d’écoute sur 80) selon la config.
 
+## Mode 443-only (TLS-ALPN-01)
+
+Luciuz peut fonctionner en **mode 443-only** (aucun listener HTTP sur le port 80) quand ACME utilise **TLS-ALPN-01**.
+C’est utile si vous voulez supprimer complètement le port 80 et réduire la surface d’attaque.
+
+### Quand utiliser TLS-ALPN-01
+Utilise `tls-alpn-01` si :
+- vous voulez un serveur **HTTPS uniquement** (port 443 seulement)
+- vous ne voulez pas exposer l’endpoint HTTP-01 sur le port 80
+
+Garde `http-01` si :
+- vous voulez le mode le plus simple / le plus classique
+- vous voulez la validation via `/.well-known/acme-challenge/...` sur le port 80
+
+### Activer le 443-only
+1) Passe le challenge ACME en `tls-alpn-01` :
+```toml
+[acme]
+enabled = true
+challenge = "tls-alpn-01"
+
+
 ## Cache et permissions
 `cache_dir` doit être un dossier writable par l’utilisateur systemd de Luciuz.
 

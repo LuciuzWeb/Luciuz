@@ -22,6 +22,27 @@ challenge = "http-01" # or "tls-alpn-01"
 - Challenges are handled on port 443 during the TLS handshake.
 - Port 80 can be left as "redirect only"; roadmap v1 adds optional 443-only mode.
 
+## 443-only mode (TLS-ALPN-01)
+
+Luciuz can run in **443-only** mode (no HTTP listener on port 80) when ACME uses **TLS-ALPN-01**.
+This is useful if you want to eliminate port 80 entirely and keep the attack surface smaller.
+
+### When to use TLS-ALPN-01
+Use `tls-alpn-01` when:
+- you want a **HTTPS-only** server (port 443 only)
+- you do not want to expose the HTTP-01 challenge endpoint on port 80
+
+Keep using `http-01` when:
+- you prefer the simplest and most common ACME flow
+- you want automatic validation via `/.well-known/acme-challenge/...` on port 80
+
+### How to enable 443-only
+1) Set ACME challenge mode to `tls-alpn-01`:
+```toml
+[acme]
+enabled = true
+challenge = "tls-alpn-01"
+
 ## Staging vs production
 - `prod = false` uses Let's Encrypt staging (recommended while testing).
 - Switch to `prod = true` once configuration is stable.

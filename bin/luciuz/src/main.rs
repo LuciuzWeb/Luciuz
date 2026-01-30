@@ -71,8 +71,19 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Run { config } => {
             let cfg = luciuz_config::load_from_path(&config).map_err(|e| anyhow::anyhow!(e))?;
             luciuz_telemetry::init(&cfg);
-
-            let http_addr: SocketAddr = cfg.server.http_listen.parse()?;
+            if cfg.acme.enabled
+                && cfg.acme.challenge == "http-01"
+                && cfg.server.http_listen.trim().is_empty()
+            {
+                return Err(anyhow::anyhow!(
+                    "server.http_listen is empty but acme.challenge=http-01 requires port 80"
+                ));
+            }
+            let http_addr: Option<SocketAddr> = if cfg.server.http_listen.trim().is_empty() {
+                None
+            } else {
+                Some(cfg.server.http_listen.parse()?)
+            };
             let https_addr: SocketAddr = cfg.server.https_listen.parse()?;
 
             let app = Router::new()
@@ -91,8 +102,12 @@ async fn main() -> Result<(), anyhow::Error> {
                 run_https_with_acme_http01(cfg, http_addr, https_addr, app).await?;
             } else {
                 // Plain HTTP only (dev mode / debugging).
-                let listener = tokio::net::TcpListener::bind(http_addr).await?;
-                axum::serve(listener, app).await?;
+                if let Some(http_addr) = http_addr {
+                    let listener = tokio::net::TcpListener::bind(http_addr).await?;
+                    axum::serve(listener, app).await?;
+                } else {
+                    tracing::info!("HTTP listener disabled (server.http_listen is empty)");
+                }
             }
 
             warn!("server stopped");
@@ -258,7 +273,7 @@ async fn http_guard_mw(
 
 async fn run_https_with_acme_http01(
     cfg: luciuz_config::Config,
-    http_addr: SocketAddr,
+    http_addr: Option<SocketAddr>,
     https_addr: SocketAddr,
     https_app: Router,
 ) -> Result<(), anyhow::Error> {
@@ -400,12 +415,27 @@ async fn run_https_with_acme_http01(
     );
 
     // --- Servers
-    let http_future = bind(http_addr).serve(http_app.into_make_service());
     let https_future = bind(https_addr)
         .acceptor(acceptor)
         .serve(https_app.into_make_service());
 
-    tokio::try_join!(https_future, http_future)?;
+    if let Some(http_addr) = http_addr {
+        // Si on est en http-01, le port 80 doit exister (sinon on ne peut pas valider).
+        if cfg.acme.challenge == "http-01" {
+            // http_app déjà construit plus haut (ACME+redirect)
+        }
+        let http_future = bind(http_addr).serve(http_app.into_make_service());
+        tokio::try_join!(https_future, http_future)?;
+    } else {
+        // 443-only: on ne lance que HTTPS
+        if cfg.acme.challenge == "http-01" {
+            return Err(anyhow::anyhow!(
+                "server.http_listen is empty but acme.challenge=http-01 requires port 80"
+            ));
+        }
+        https_future.await?;
+    }
+
     Ok(())
 }
 
