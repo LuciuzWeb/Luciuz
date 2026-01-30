@@ -1,12 +1,6 @@
-# Wasm Plugins
+# Document moved
 
-Luciuz uses WebAssembly (Wasm) to enable safe extensibility.
+This document moved to the bilingual documentation folders.
 
-## Design goals
-- Plugins are sandboxed and resource-limited.
-- Plugins have explicit, capability-based permissions.
-- The host ABI is stable and versioned.
-
-## Hooks (planned)
-- `on_request`
-- `on_response`
+- English: `docs/en/wasm-plugins.md`
+- Français : `docs/fr/wasm-plugins.md`
