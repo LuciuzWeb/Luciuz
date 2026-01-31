@@ -93,6 +93,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 let proxy_router = luciuz_proxy::router(&cfg)?;
                 Router::new()
                     .route("/healthz", get(|| async { "ok" }))
+                    .route("/", get(|| async { "luciuz: running" }))
                     .merge(proxy_router)
             } else {
                 Router::new().route("/healthz", get(|| async { "ok" }))
