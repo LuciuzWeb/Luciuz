@@ -1,90 +1,109 @@
 use axum::{
     body::{to_bytes, Body},
-    http::{header, Request, Response, StatusCode},
+    http::{header, HeaderMap, HeaderName, Request, Response, StatusCode},
     routing::any,
     Router,
 };
 use luciuz_config::Config;
-use reqwest::Method;
-use tracing::{error, warn};
+use reqwest::Client;
+use std::{collections::HashSet, time::Duration};
+use tracing::{info, warn};
 
-const HOP_BY_HOP: &[header::HeaderName] = &[
-    header::CONNECTION,
-    header::PROXY_AUTHENTICATE,
-    header::PROXY_AUTHORIZATION,
-    header::TE,
-    header::TRAILER,
-    header::TRANSFER_ENCODING,
-    header::UPGRADE,
-];
-
+/// Build the proxy router from config.
+/// It creates explicit routes for:
+/// - /api
+/// - /api/
+/// - /api/{*path}
 pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
-    let p = cfg
+    let proxy_cfg = cfg
         .proxy
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing [proxy] config"))?;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let routes = proxy_cfg.routes.clone();
+    info!(proxy_routes = ?routes, "proxy routes");
 
-    let max_body = p.max_body_bytes;
+    let max_body: usize = if proxy_cfg.max_body_bytes == 0 {
+        10 * 1024 * 1024 // 10 MB
+    } else {
+        proxy_cfg.max_body_bytes as usize
+    };
 
-    // More specific prefixes should be added first (e.g. /api before /).
-    let mut routes = p.routes.clone();
-    routes.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+    // A simple reqwest client for upstream calls
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
     let mut rtr = Router::new();
 
     for route in routes {
-        let prefix = route.prefix.clone();
-        let upstream = route.upstream.clone();
+        let prefix = route.prefix.trim_end_matches('/').to_string(); // "/api"
+        let upstream = route.upstream.trim_end_matches('/').to_string();
 
-        // One shared client for this route setup
-        let client_base = client.clone();
+        if prefix.is_empty() {
+            continue;
+        }
 
-        // Match both "/prefix" and "/prefix/*path"
-        let pattern = if prefix == "/" {
-            "/{*path}".to_string()
-        } else {
-            format!("{}/{{*path}}", prefix.trim_end_matches('/'))
-        };
+        let prefix_slash = format!("{}/", prefix.trim_end_matches('/')); // "/api/"
+        let pattern = format!("{}/{{*path}}", prefix.trim_end_matches('/')); // "/api/{*path}"
 
-        // ---- closure for "/prefix/*path"
-        let prefix_1 = prefix.clone();
-        let upstream_1 = upstream.clone();
-        let client_1 = client_base.clone();
+        // /api
+        {
+            let client = client.clone();
+            let upstream = upstream.clone();
+            let prefix_for_strip = prefix.clone();
+            let max_body = max_body;
 
-        // ---- closure for "/prefix"
-        let prefix_2 = prefix.clone();
-        let upstream_2 = upstream.clone();
-        let client_2 = client_base.clone();
-
-        rtr = rtr
-            .route(
-                &pattern,
-                any(move |req| {
-                    proxy_one(
-                        req,
-                        client_1.clone(),
-                        upstream_1.clone(),
-                        prefix_1.clone(),
-                        max_body,
-                    )
-                }),
-            )
-            .route(
+            rtr = rtr.route(
                 &prefix,
-                any(move |req| {
-                    proxy_one(
-                        req,
-                        client_2.clone(),
-                        upstream_2.clone(),
-                        prefix_2.clone(),
-                        max_body,
-                    )
+                any(move |req: Request<Body>| {
+                    let client = client.clone();
+                    let upstream = upstream.clone();
+                    let prefix_for_strip = prefix_for_strip.clone();
+                    async move {
+                        proxy_one(req, client, upstream, prefix_for_strip, max_body).await
+                    }
                 }),
             );
+        }
+
+        // /api/
+        {
+            let client = client.clone();
+            let upstream = upstream.clone();
+            let prefix_for_strip = prefix.clone();
+            let max_body = max_body;
+
+            rtr = rtr.route(
+                &prefix_slash,
+                any(move |req: Request<Body>| {
+                    let client = client.clone();
+                    let upstream = upstream.clone();
+                    let prefix_for_strip = prefix_for_strip.clone();
+                    async move {
+                        proxy_one(req, client, upstream, prefix_for_strip, max_body).await
+                    }
+                }),
+            );
+        }
+
+        // /api/{*path}
+        {
+            let client = client.clone();
+            let upstream = upstream.clone();
+            let prefix_for_strip = prefix.clone();
+            let max_body = max_body;
+
+            rtr = rtr.route(
+                &pattern,
+                any(move |req: Request<Body>| {
+                    let client = client.clone();
+                    let upstream = upstream.clone();
+                    let prefix_for_strip = prefix_for_strip.clone();
+                    async move {
+                        proxy_one(req, client, upstream, prefix_for_strip, max_body).await
+                    }
+                }),
+            );
+        }
     }
 
     Ok(rtr)
@@ -92,26 +111,14 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
 
 async fn proxy_one(
     req: Request<Body>,
-    client: reqwest::Client,
+    client: Client,
     upstream: String,
     prefix: String,
-    max_body: usize,
+    max_body_bytes: usize,
 ) -> Response<Body> {
     let (parts, body) = req.into_parts();
 
-    // Read body (MVP: buffered). If too big, return 413.
-    let body_bytes = match to_bytes(body, max_body).await {
-        Ok(b) => b,
-        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response(),
-    };
-
-    let method = parts
-        .method
-        .as_str()
-        .parse::<Method>()
-        .unwrap_or(Method::GET);
-
-    // Build target URL: upstream + (path without prefix) + query
+    // IMPORTANT: we want /api => / and /api/ => /
     let orig_path = parts.uri.path();
     let rest = if prefix == "/" {
         orig_path
@@ -128,82 +135,101 @@ async fn proxy_one(
         target.push_str(q);
     }
 
-    // Prepare headers (remove hop-by-hop + Host)
-    let mut out_headers = reqwest::header::HeaderMap::new();
-    for (k, v) in parts.headers.iter() {
-        if k == header::HOST {
-            continue;
+    // Body (with limit)
+    let bytes = match to_bytes(body, max_body_bytes).await {
+        Ok(b) => b,
+        Err(_) => {
+            return Response::builder()
+                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                .body(Body::from("payload too large"))
+                .unwrap();
         }
-        if HOP_BY_HOP.contains(k) {
-            continue;
-        }
-        if let (Ok(hname), Ok(hval)) = (
-            reqwest::header::HeaderName::from_bytes(k.as_str().as_bytes()),
-            reqwest::header::HeaderValue::from_bytes(v.as_bytes()),
-        ) {
-            out_headers.insert(hname, hval);
-        }
-    }
+    };
 
-    // X-Forwarded-* (MVP)
-    if let Some(host) = parts
-        .headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-    {
-        out_headers.insert("x-forwarded-host", host.parse().unwrap());
-    }
-    out_headers.insert("x-forwarded-proto", "https".parse().unwrap());
+    // Build upstream request
+    let mut rb = client.request(parts.method.clone(), target);
 
-    let res = client
-        .request(method, target)
-        .headers(out_headers)
-        .body(body_bytes.to_vec())
-        .send()
-        .await;
+    // Copy headers (filter hop-by-hop)
+    rb = rb.headers(filter_hop_by_hop(parts.headers));
 
-    let res = match res {
+    // Send
+    let upstream_resp = match rb.body(bytes).send().await {
         Ok(r) => r,
         Err(err) => {
             warn!(?err, "upstream request failed");
-            return (StatusCode::BAD_GATEWAY, "bad gateway").into_response();
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::from("bad gateway"))
+                .unwrap();
         }
     };
 
-    // Convert response back to axum Response
-    let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
-    let mut resp = Response::builder().status(status);
+    let mut out = Response::builder().status(status);
 
-    // Copy headers (skip hop-by-hop)
-    for (k, v) in res.headers().iter() {
-        if HOP_BY_HOP.contains(k) {
-            continue;
+    // Copy upstream response headers (filter hop-by-hop)
+    if let Some(headers) = out.headers_mut() {
+        for (k, v) in upstream_resp.headers().iter() {
+            if is_hop_by_hop_header(k) {
+                continue;
+            }
+            headers.append(k.clone(), v.clone());
         }
-        resp = resp.header(k, v);
+
+        // safety: avoid letting upstream set our security headers policy
+        headers.remove(header::STRICT_TRANSPORT_SECURITY);
     }
 
-    let bytes = match res.bytes().await {
+    let body_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
-        Err(err) => {
-            error!(?err, "failed reading upstream body");
-            return (StatusCode::BAD_GATEWAY, "bad gateway").into_response();
+        Err(_) => {
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::from("bad gateway"))
+                .unwrap();
         }
     };
 
-    resp.body(Body::from(bytes))
-        .unwrap_or_else(|_| (StatusCode::BAD_GATEWAY, "bad gateway").into_response())
+    out.body(Body::from(body_bytes)).unwrap()
 }
 
-trait IntoAxumResponse {
-    fn into_response(self) -> Response<Body>;
-}
-
-impl IntoAxumResponse for (StatusCode, &'static str) {
-    fn into_response(self) -> Response<Body> {
-        Response::builder()
-            .status(self.0)
-            .body(Body::from(self.1))
-            .unwrap()
+fn filter_hop_by_hop(mut in_headers: HeaderMap) -> HeaderMap {
+    // Remove hop-by-hop headers
+    let hop = hop_by_hop_set();
+    let keys: Vec<HeaderName> = in_headers.keys().cloned().collect();
+    for k in keys {
+        if hop.contains(k.as_str()) {
+            in_headers.remove(&k);
+        }
     }
+    in_headers
+}
+
+fn hop_by_hop_set() -> HashSet<&'static str> {
+    HashSet::from([
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    ])
+}
+
+fn is_hop_by_hop_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }

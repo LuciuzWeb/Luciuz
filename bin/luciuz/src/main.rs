@@ -13,14 +13,13 @@ use axum::{
     },
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, get_service},
+    routing::get,
     Router,
 };
 use clap::{Parser, Subcommand};
 use std::time::Duration;
 use tower::timeout::TimeoutLayer;
 use tower::{BoxError, ServiceBuilder};
-use tower_http::services::ServeDir;
 use tracing::{info, warn};
 
 static COOP: HeaderName = HeaderName::from_static("cross-origin-opener-policy");
@@ -57,6 +56,9 @@ async fn main() -> Result<(), anyhow::Error> {
             luciuz_telemetry::init(&cfg);
 
             info!("config ok");
+            if let Some(p) = &cfg.proxy {
+                info!(proxy_routes = ?p.routes, "proxy routes");
+            }
             info!(
                 http_listen = %cfg.server.http_listen,
                 https_listen = %cfg.server.https_listen,
@@ -87,35 +89,17 @@ async fn main() -> Result<(), anyhow::Error> {
             };
             let https_addr: SocketAddr = cfg.server.https_listen.parse()?;
 
-            let app: axum::Router<()> = if cfg.server.profile == "static_site" {
-                let s = cfg
-                    .static_site
-                    .as_ref()
-                    .expect("config validated: missing [static_site]");
-
-                let service =
-                    get_service(ServeDir::new(&s.root).append_index_html_on_directories(true))
-                        .handle_error(|err| async move {
-                            tracing::error!(?err, "static file error");
-                            (StatusCode::INTERNAL_SERVER_ERROR, "static file error")
-                        });
-
-                Router::new()
-                    .route("/healthz", get(|| async { "ok" }))
-                    .fallback_service(service)
-            } else if cfg.server.profile == "public_api" {
-                // ✅ ici on branche le reverse proxy
+            let app: axum::Router<()> = if cfg.server.profile == "public_api" {
                 let proxy_router = luciuz_proxy::router(&cfg)?;
-
                 Router::new()
                     .route("/healthz", get(|| async { "ok" }))
                     .merge(proxy_router)
             } else {
-                // default/minimal router for now (admin_panel later)
-                Router::new()
-                    .route("/healthz", get(|| async { "ok" }))
-                    .route("/", get(|| async { "luciuz: running" }))
+                Router::new().route("/healthz", get(|| async { "ok" }))
             };
+            if let Some(p) = &cfg.proxy {
+                info!(proxy_routes = ?p.routes, "proxy routes");
+            }
 
             info!(
                 http_listen = %cfg.server.http_listen,
