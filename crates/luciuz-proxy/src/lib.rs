@@ -152,7 +152,7 @@ async fn proxy_one(
     };
 
     // Build upstream request
-    let mut rb = client.request(parts.method.clone(), target);
+    let mut rb = client.request(parts.method.clone(), target.clone());
 
     let mut out_headers = filter_hop_by_hop(parts.headers);
 
@@ -167,6 +167,21 @@ async fn proxy_one(
         HeaderName::from_static("x-forwarded-proto"),
         HeaderValue::from_static("https"),
     );
+
+    // Common reverse-proxy headers
+    out_headers.insert(
+        HeaderName::from_static("x-forwarded-prefix"),
+        HeaderValue::from_str(prefix).unwrap_or_else(|_| HeaderValue::from_static("/")),
+    );
+
+    let fwd_uri = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or(parts.uri.path());
+    if let Ok(v) = HeaderValue::from_str(fwd_uri) {
+        out_headers.insert(HeaderName::from_static("x-forwarded-uri"), v);
+    }
 
     // x-forwarded-for = IP client (si on l'a via ConnectInfo)
     if let Some(ip) = client_ip.as_deref() {
@@ -190,16 +205,28 @@ async fn proxy_one(
     rb = rb.headers(out_headers);
 
     // Send
+    let start = Instant::now();
+
     let upstream_resp = match rb.body(bytes).send().await {
         Ok(r) => r,
         Err(err) => {
-            warn!(?err, "upstream request failed");
+            warn!(?err, target = %target, "upstream request failed");
             return Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .body(Body::from("bad gateway"))
                 .unwrap();
         }
     };
+
+    tracing::info!(
+        method = %parts.method,
+        path = %parts.uri.path(),
+        target = %target,
+        status = %upstream_resp.status(),
+        dur_ms = start.elapsed().as_millis() as u64,
+        client_ip = ?client_ip,
+        "upstream response"
+    );
 
     let status =
         StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -217,7 +244,11 @@ async fn proxy_one(
 
         // safety: avoid letting upstream set our security headers policy
         headers.remove(header::STRICT_TRANSPORT_SECURITY);
+        headers.remove(header::SERVER);
+        headers.remove(HeaderName::from_static("x-powered-by"));
+        headers.remove(HeaderName::from_static("via"));
     }
+
 
     let body_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
