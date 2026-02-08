@@ -6,6 +6,7 @@ use axum::{
 };
 use luciuz_config::Config;
 use reqwest::Client;
+use std::time::Instant;
 use std::{collections::HashSet, time::Duration};
 use tracing::{info, warn};
 
@@ -171,7 +172,7 @@ async fn proxy_one(
     // Common reverse-proxy headers
     out_headers.insert(
         HeaderName::from_static("x-forwarded-prefix"),
-        HeaderValue::from_str(prefix).unwrap_or_else(|_| HeaderValue::from_static("/")),
+        HeaderValue::from_str(prefix.as_str()).unwrap_or_else(|_| HeaderValue::from_static("/")),
     );
 
     let fwd_uri = parts
@@ -248,7 +249,6 @@ async fn proxy_one(
         headers.remove(HeaderName::from_static("x-powered-by"));
         headers.remove(HeaderName::from_static("via"));
     }
-
 
     let body_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
