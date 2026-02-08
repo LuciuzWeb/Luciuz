@@ -54,6 +54,30 @@ cache_dir = "/var/lib/luciuz/acme"
 challenge = "http-01"  # or "tls-alpn-01"
 ```
 
+## Installation (Ubuntu 24.04)
+
+Luciuz provides an interactive installer for a fresh Ubuntu 24.04 server.
+
+### Quick install
+
+```bash
+git clone https://github.com/LuciuzHQ/Luciuz.git
+cd Luciuz
+chmod +x scripts/ubuntu_install.sh
+sudo ./scripts/ubuntu_install.sh
+```
+
+### What it does
+- Installs required packages
+- Creates/uses a dedicated system user
+- Clones the repository and builds the `luciuz` binary (release)
+- Sets `CAP_NET_BIND_SERVICE` so Luciuz can bind to 80/443 without running as root
+- Writes a default config file and a systemd service
+- Enables UFW with safe defaults
+
+### Installer questions explained
+See: docs/en/UBUNTU_INSTALL.md
+
 ## Run in production (systemd)
 See `docs/en/systemd.md` (or `docs/fr/systemd.md`).
 
