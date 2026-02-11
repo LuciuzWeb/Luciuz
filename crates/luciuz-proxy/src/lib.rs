@@ -9,6 +9,7 @@ use reqwest::Client;
 use std::time::Instant;
 use std::{collections::HashSet, time::Duration};
 use tracing::{info, warn};
+use std::time::Instant;
 
 /// Build the proxy router from config.
 /// It creates explicit routes for:
