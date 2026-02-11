@@ -119,6 +119,25 @@ fn validate(cfg: &Config) -> Result<()> {
         }
     }
 
+    // --- proxy validation (optional)
+    if let Some(proxy) = &cfg.proxy {
+        for r in &proxy.routes {
+            if !r.prefix.starts_with('/') {
+                return Err(LuciuzError::Config(format!(
+                    "proxy.routes.prefix must start with '/': {}",
+                    r.prefix
+                )));
+            }
+
+            if r.upstream.trim().is_empty() {
+                return Err(LuciuzError::Config(format!(
+                    "proxy.routes.upstream is empty for prefix {}",
+                    r.prefix
+                )));
+            }
+        }
+    }
+
     if let Some(host) = &cfg.server.canonical_host {
         if host.trim().is_empty() {
             return Err(LuciuzError::Config("server.canonical_host is empty".into()));

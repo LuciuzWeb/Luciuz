@@ -155,6 +155,10 @@ fn default_index() -> String {
     "index.html".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Proxy {
     #[serde(default = "default_max_body_bytes")]
@@ -168,6 +172,8 @@ pub struct Proxy {
 pub struct ProxyRoute {
     pub prefix: String,
     pub upstream: String,
+    #[serde(default = "default_true")]
+    pub strip_prefix: bool,
 }
 
 fn default_max_body_bytes() -> usize {
