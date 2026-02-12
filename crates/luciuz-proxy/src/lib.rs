@@ -13,7 +13,6 @@ use tracing::{info, warn};
 /// Build the proxy router from config.
 /// It creates explicit routes for:
 /// - /api
-/// - /api/
 /// - /api/{*path}
 pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
     let proxy_cfg = cfg
@@ -38,12 +37,12 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
     for route in routes {
         let prefix = route.prefix.trim_end_matches('/').to_string(); // "/api"
         let upstream = route.upstream.trim_end_matches('/').to_string();
+        let strip_prefix = route.strip_prefix;
 
         if prefix.is_empty() {
             continue;
         }
 
-        let prefix_slash = format!("{}/", prefix.trim_end_matches('/')); // "/api/"
         let pattern = format!("{}/{{*path}}", prefix.trim_end_matches('/')); // "/api/{*path}"
 
         // /api
@@ -59,28 +58,17 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
                     let client = client.clone();
                     let upstream = upstream.clone();
                     let prefix_for_strip = prefix_for_strip.clone();
+                    let strip_prefix = strip_prefix;
                     async move {
-                        proxy_one(req, client, upstream, prefix_for_strip, max_body).await
-                    }
-                }),
-            );
-        }
-
-        // /api/
-        {
-            let client = client.clone();
-            let upstream = upstream.clone();
-            let prefix_for_strip = prefix.clone();
-            let max_body = max_body;
-
-            rtr = rtr.route(
-                &prefix_slash,
-                any(move |req: Request<Body>| {
-                    let client = client.clone();
-                    let upstream = upstream.clone();
-                    let prefix_for_strip = prefix_for_strip.clone();
-                    async move {
-                        proxy_one(req, client, upstream, prefix_for_strip, max_body).await
+                        proxy_one(
+                            req,
+                            client,
+                            upstream,
+                            prefix_for_strip,
+                            strip_prefix,
+                            max_body,
+                        )
+                        .await
                     }
                 }),
             );
@@ -99,8 +87,17 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
                     let client = client.clone();
                     let upstream = upstream.clone();
                     let prefix_for_strip = prefix_for_strip.clone();
+                    let strip_prefix = strip_prefix;
                     async move {
-                        proxy_one(req, client, upstream, prefix_for_strip, max_body).await
+                        proxy_one(
+                            req,
+                            client,
+                            upstream,
+                            prefix_for_strip,
+                            strip_prefix,
+                            max_body,
+                        )
+                        .await
                     }
                 }),
             );
@@ -115,6 +112,7 @@ async fn proxy_one(
     client: Client,
     upstream: String,
     prefix: String,
+    strip_prefix: bool,
     max_body_bytes: usize,
 ) -> Response<Body> {
     let (parts, body) = req.into_parts();
@@ -127,12 +125,14 @@ async fn proxy_one(
     // IMPORTANT: we want /api => / and /api/ => /
     let orig_path = parts.uri.path();
 
-    // IMPORTANT: we want /api => / and /api/ => /
-    // (for now: always strip the configured prefix)
-    let mut rest = if prefix == "/" {
-        orig_path
+    let mut rest = if strip_prefix {
+        if prefix == "/" {
+            orig_path
+        } else {
+            orig_path.strip_prefix(prefix.as_str()).unwrap_or(orig_path)
+        }
     } else {
-        orig_path.strip_prefix(prefix.as_str()).unwrap_or(orig_path)
+        orig_path
     };
 
     // normaliser: si vide => "/"

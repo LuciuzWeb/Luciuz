@@ -36,6 +36,7 @@ index = "index.html"
 [proxy]
 max_body_bytes = 52428800 # 50 MB
 
-[[proxy.routes]]
+[proxy.routes]
 prefix = "/api"
 upstream = "http://127.0.0.1:8080"
+strip_prefix = true
