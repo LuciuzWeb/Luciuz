@@ -126,11 +126,19 @@ async fn proxy_one(
 
     // IMPORTANT: we want /api => / and /api/ => /
     let orig_path = parts.uri.path();
-    let rest = if prefix == "/" {
+
+    // IMPORTANT: we want /api => / and /api/ => /
+    // (for now: always strip the configured prefix)
+    let mut rest = if prefix == "/" {
         orig_path
     } else {
         orig_path.strip_prefix(prefix.as_str()).unwrap_or(orig_path)
     };
+
+    // normaliser: si vide => "/"
+    if rest.is_empty() {
+        rest = "/";
+    }
 
     let rest = if rest.is_empty() { "/" } else { rest };
     let base = upstream.trim_end_matches('/');
@@ -140,6 +148,9 @@ async fn proxy_one(
         target.push('?');
         target.push_str(q);
     }
+
+    // We'll build a reqwest request, and then attach these headers.
+    // (We add them only if they are missing.)
 
     // Body (with limit)
     let bytes = match to_bytes(body, max_body_bytes).await {
@@ -157,17 +168,21 @@ async fn proxy_one(
 
     let mut out_headers = filter_hop_by_hop(parts.headers);
 
-    if let Some(host) = out_headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
-        out_headers.insert(
-            HeaderName::from_static("x-forwarded-host"),
-            HeaderValue::from_str(host).unwrap_or_else(|_| HeaderValue::from_static("invalid")),
-        );
+    // x-forwarded-host (set only if missing)
+    let xf_host = HeaderName::from_static("x-forwarded-host");
+    if !out_headers.contains_key(&xf_host) {
+        if let Some(host) = out_headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
+            if let Ok(v) = HeaderValue::from_str(host) {
+                out_headers.insert(xf_host, v);
+            }
+        }
     }
 
-    out_headers.insert(
-        HeaderName::from_static("x-forwarded-proto"),
-        HeaderValue::from_static("https"),
-    );
+    // x-forwarded-proto (set only if missing)
+    let xf_proto = HeaderName::from_static("x-forwarded-proto");
+    if !out_headers.contains_key(&xf_proto) {
+        out_headers.insert(xf_proto, HeaderValue::from_static("https"));
+    }
 
     // Common reverse-proxy headers
     out_headers.insert(
