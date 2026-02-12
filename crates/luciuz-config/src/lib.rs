@@ -91,6 +91,28 @@ fn validate(cfg: &Config) -> Result<()> {
         }
     }
 
+    // --- proxy validation (optional)
+    if let Some(proxy) = &cfg.proxy {
+        for (i, r) in proxy.routes.iter().enumerate() {
+            if r.prefix.trim().is_empty() {
+                return Err(LuciuzError::Config(format!(
+                    "proxy.routes[{i}].prefix is empty"
+                )));
+            }
+            if !r.prefix.starts_with('/') {
+                return Err(LuciuzError::Config(format!(
+                    "proxy.routes[{i}].prefix must start with '/' (got: {})",
+                    r.prefix
+                )));
+            }
+            if r.upstream.trim().is_empty() {
+                return Err(LuciuzError::Config(format!(
+                    "proxy.routes[{i}].upstream is empty"
+                )));
+            }
+        }
+    }
+
     if cfg.server.hsts && cfg.server.hsts_max_age == 0 {
         return Err(LuciuzError::Config(
             "server.hsts_max_age must be > 0 when hsts=true".into(),
