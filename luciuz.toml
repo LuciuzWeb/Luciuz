@@ -40,3 +40,5 @@ max_body_bytes = 52428800 # 50 MB
 prefix = "/api"
 upstream = "http://127.0.0.1:8080"
 strip_prefix = true
+preserve_host = true
+pass_x_forwarded = true

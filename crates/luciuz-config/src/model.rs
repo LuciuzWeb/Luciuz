@@ -172,8 +172,15 @@ pub struct Proxy {
 pub struct ProxyRoute {
     pub prefix: String,
     pub upstream: String,
+
     #[serde(default = "default_true")]
     pub strip_prefix: bool,
+
+    #[serde(default = "default_true")]
+    pub preserve_host: bool,
+
+    #[serde(default = "default_true")]
+    pub pass_x_forwarded: bool,
 }
 
 fn default_max_body_bytes() -> usize {

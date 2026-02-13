@@ -38,6 +38,8 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
         let prefix = route.prefix.trim_end_matches('/').to_string(); // "/api"
         let upstream = route.upstream.trim_end_matches('/').to_string();
         let strip_prefix = route.strip_prefix;
+        let preserve_host = route.preserve_host;
+        let pass_x_forwarded = route.pass_x_forwarded;
 
         if prefix.is_empty() {
             continue;
@@ -50,6 +52,8 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
             let client = client.clone();
             let upstream = upstream.clone();
             let prefix_for_strip = prefix.clone();
+            let preserve_host = preserve_host;
+            let pass_x_forwarded = pass_x_forwarded;
             let max_body = max_body;
 
             rtr = rtr.route(
@@ -66,6 +70,8 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
                             upstream,
                             prefix_for_strip,
                             strip_prefix,
+                            preserve_host,
+                            pass_x_forwarded,
                             max_body,
                         )
                         .await
@@ -79,6 +85,8 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
             let client = client.clone();
             let upstream = upstream.clone();
             let prefix_for_strip = prefix.clone();
+            let preserve_host = preserve_host;
+            let pass_x_forwarded = pass_x_forwarded;
             let max_body = max_body;
 
             rtr = rtr.route(
@@ -95,6 +103,8 @@ pub fn router(cfg: &Config) -> anyhow::Result<Router<()>> {
                             upstream,
                             prefix_for_strip,
                             strip_prefix,
+                            preserve_host,
+                            pass_x_forwarded,
                             max_body,
                         )
                         .await
@@ -113,9 +123,16 @@ async fn proxy_one(
     upstream: String,
     prefix: String,
     strip_prefix: bool,
+    preserve_host: bool,
+    pass_x_forwarded: bool,
     max_body_bytes: usize,
 ) -> Response<Body> {
     let (parts, body) = req.into_parts();
+    let orig_host = parts
+        .headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
     let client_ip = parts
         .extensions
@@ -167,11 +184,14 @@ async fn proxy_one(
     let mut rb = client.request(parts.method.clone(), target.clone());
 
     let mut out_headers = filter_hop_by_hop(parts.headers);
-
+    if !preserve_host {
+        out_headers.remove(header::HOST);
+    }
+    if pass_x_forwarded {
     // x-forwarded-host (set only if missing)
     let xf_host = HeaderName::from_static("x-forwarded-host");
     if !out_headers.contains_key(&xf_host) {
-        if let Some(host) = out_headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
+        if let Some(host) = orig_host.as_deref() {
             if let Ok(v) = HeaderValue::from_str(host) {
                 out_headers.insert(xf_host, v);
             }
@@ -216,6 +236,7 @@ async fn proxy_one(
                 }
             }
         }
+    }
     }
 
     rb = rb.headers(out_headers);
