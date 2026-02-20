@@ -128,6 +128,18 @@ async fn proxy_one(
     max_body_bytes: usize,
 ) -> Response<Body> {
     let (parts, body) = req.into_parts();
+
+    // Preserve some incoming metadata before we move headers around.
+    let incoming_host = parts
+        .headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let incoming_xf_proto = parts
+        .headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let orig_host = parts
         .headers
         .get(header::HOST)
@@ -188,58 +200,74 @@ async fn proxy_one(
         out_headers.remove(header::HOST);
     }
     if pass_x_forwarded {
-    // x-forwarded-host (set only if missing)
-    let xf_host = HeaderName::from_static("x-forwarded-host");
-    if !out_headers.contains_key(&xf_host) {
-        if let Some(host) = orig_host.as_deref() {
-            if let Ok(v) = HeaderValue::from_str(host) {
-                out_headers.insert(xf_host, v);
-            }
-        }
-    }
-
-    // x-forwarded-proto (set only if missing)
-    let xf_proto = HeaderName::from_static("x-forwarded-proto");
-    if !out_headers.contains_key(&xf_proto) {
-        out_headers.insert(xf_proto, HeaderValue::from_static("https"));
-    }
-
-    // Common reverse-proxy headers
-    out_headers.insert(
-        HeaderName::from_static("x-forwarded-prefix"),
-        HeaderValue::from_str(prefix.as_str()).unwrap_or_else(|_| HeaderValue::from_static("/")),
-    );
-
-    let fwd_uri = parts
-        .uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or(parts.uri.path());
-    if let Ok(v) = HeaderValue::from_str(fwd_uri) {
-        out_headers.insert(HeaderName::from_static("x-forwarded-uri"), v);
-    }
-
-    // x-forwarded-for = IP client (si on l'a via ConnectInfo)
-    if let Some(ip) = client_ip.as_deref() {
-        let name = HeaderName::from_static("x-forwarded-for");
-
-        match out_headers.get(&name).and_then(|v| v.to_str().ok()) {
-            Some(prev) => {
-                let combined = format!("{prev}, {ip}");
-                if let Ok(v) = HeaderValue::from_str(&combined) {
-                    out_headers.insert(name, v);
-                }
-            }
-            None => {
-                if let Ok(v) = HeaderValue::from_str(ip) {
-                    out_headers.insert(name, v);
+        // x-forwarded-host (set only if missing)
+        let xf_host = HeaderName::from_static("x-forwarded-host");
+        if !out_headers.contains_key(&xf_host) {
+            if let Some(host) = orig_host.as_deref() {
+                if let Ok(v) = HeaderValue::from_str(host) {
+                    out_headers.insert(xf_host, v);
                 }
             }
         }
-    }
+
+        // x-forwarded-proto (set only if missing)
+        let xf_proto = HeaderName::from_static("x-forwarded-proto");
+        if !out_headers.contains_key(&xf_proto) {
+            let proto = incoming_xf_proto.as_deref().unwrap_or("https");
+            if let Ok(v) = HeaderValue::from_str(proto) {
+                out_headers.insert(xf_proto, v);
+            }
+        }
+
+        // Common reverse-proxy headers
+        out_headers.insert(
+            HeaderName::from_static("x-forwarded-prefix"),
+            HeaderValue::from_str(prefix.as_str())
+                .unwrap_or_else(|_| HeaderValue::from_static("/")),
+        );
+
+        let fwd_uri = parts
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or(parts.uri.path());
+        if let Ok(v) = HeaderValue::from_str(fwd_uri) {
+            out_headers.insert(HeaderName::from_static("x-forwarded-uri"), v);
+        }
+
+        // x-forwarded-for = IP client (si on l'a via ConnectInfo)
+        if let Some(ip) = client_ip.as_deref() {
+            let name = HeaderName::from_static("x-forwarded-for");
+
+            match out_headers.get(&name).and_then(|v| v.to_str().ok()) {
+                Some(prev) => {
+                    let combined = format!("{prev}, {ip}");
+                    if let Ok(v) = HeaderValue::from_str(&combined) {
+                        out_headers.insert(name, v);
+                    }
+                }
+                None => {
+                    if let Ok(v) = HeaderValue::from_str(ip) {
+                        out_headers.insert(name, v);
+                    }
+                }
+            }
+        }
     }
 
     rb = rb.headers(out_headers);
+
+    // Force Host header according to route policy.
+    // - preserve_host=true  -> forward the original Host (e.g. luciuz.com)
+    // - preserve_host=false -> use the upstream host:port (e.g. 127.0.0.1:8080)
+    let host_value = if preserve_host {
+        incoming_host
+    } else {
+        hostport_from_url(&target)
+    };
+    if let Some(h) = host_value.as_deref() {
+        rb = rb.header(header::HOST, h);
+    }
 
     // Send
     let start = Instant::now();
@@ -336,4 +364,21 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+/// Extract "host" or "host:port" from an absolute URL.
+///
+/// We avoid adding extra dependencies (like `url`) and rely on the `http::Uri`
+/// parser (re-exported by axum).
+fn hostport_from_url(url: &str) -> Option<String> {
+    let uri: axum::http::Uri = url.parse().ok()?;
+    let host = uri.host()?;
+
+    // If the URL explicitly contains a port, keep it.
+    if let Some(port) = uri.port_u16() {
+        return Some(format!("{host}:{port}"));
+    }
+
+    // Otherwise, just return the host (default port is implied by the scheme).
+    Some(host.to_string())
 }
